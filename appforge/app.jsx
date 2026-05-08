@@ -286,6 +286,7 @@ export default function App() {
   const healRef = React.useRef({});
   const pkgRef = React.useRef({});
   const healTimerRef = React.useRef({});
+  const validateTimerRef = React.useRef({});
 
   // When transitioning into mobile, close the sidebar drawer (it would otherwise
   // be stuck open from a desktop layout). When leaving mobile, restore it open.
@@ -407,8 +408,42 @@ export default function App() {
     return String(h);
   };
 
-  const setHealing = (id, active, reason) => {
-    setConversations(cs => cs.map(c => c.id !== id ? c : ({ ...c, healing: active ? { active: true, reason: reason || '' } : null })));
+  const setHealState = (id, patch) => {
+    setConversations(cs => cs.map(c => {
+      if (c.id !== id) return c;
+      const prev = c.healing || null;
+      const next = typeof patch === 'function' ? patch(prev) : patch;
+      return { ...c, healing: next };
+    }));
+  };
+
+  const setHealing = (id, active, patch = {}) => {
+    if (!active) return setHealState(id, null);
+    setHealState(id, (prev) => ({
+      active: true,
+      since: prev?.since || Date.now(),
+      attempt: patch.attempt ?? prev?.attempt ?? 1,
+      step: patch.step || prev?.step || 'detect',
+      reason: patch.reason ?? prev?.reason ?? '',
+      detail: patch.detail ?? prev?.detail ?? '',
+    }));
+  };
+
+  const clearValidationTimer = (cid) => {
+    const t = validateTimerRef.current[cid];
+    if (t) window.clearTimeout(t);
+    validateTimerRef.current[cid] = null;
+  };
+
+  const startValidation = (cid, reason) => {
+    clearValidationTimer(cid);
+    setHealing(cid, true, { step: 'validate', reason: reason || 'validating preview', detail: 'Reloading preview and waiting for mount…' });
+    log(cid, 'info', 'auto-heal: validating preview render…');
+    try { window.dispatchEvent(new CustomEvent('forge:preview-reload')); } catch {}
+    validateTimerRef.current[cid] = window.setTimeout(() => {
+      validateTimerRef.current[cid] = null;
+      scheduleHeal({ source: 'validate', message: 'Preview did not become ready (timeout)', stack: '' });
+    }, 4500);
   };
 
   const scheduleHeal = React.useCallback((rawErr) => {
@@ -429,16 +464,18 @@ export default function App() {
     const sameSnapshot = state.key === key && state.lastFilesSig === sig;
 
     // If the exact same error repeats without any code changes, don't spam the model.
-    // Prefer preview-only recovery (rollback to last stable + reload).
+    // Prefer preview-only recovery (rollback/reload) and then VALIDATE.
     if (sameSnapshot && attempts >= 2) {
       const stable = stableFilesRef.current[cid];
       if (stable?.length) {
+        setHealing(cid, true, { attempt: attempts, step: 'rollback', reason: `${err.source}: ${message}`, detail: 'Reverting to last stable snapshot…' });
+        log(cid, 'warn', `auto-heal: repeated identical error with no code changes — rolling back to last stable snapshot`);
         setConversations(cs => cs.map(c => c.id === cid ? { ...c, files: stable.map(f => ({ ...f })) } : c));
-        log(cid, 'warn', `auto-heal: repeated identical error with no code changes — rolled back to last stable snapshot`);
       } else {
+        setHealing(cid, true, { attempt: attempts, step: 'reload', reason: `${err.source}: ${message}`, detail: 'Forcing preview reload…' });
         log(cid, 'warn', `auto-heal: repeated identical error with no code changes — forcing preview reload`);
       }
-      try { window.dispatchEvent(new CustomEvent('forge:preview-reload')); } catch {}
+      startValidation(cid, 'post-recovery validation');
       return;
     }
     healRef.current[cid] = {
@@ -452,6 +489,7 @@ export default function App() {
     // Guardrails: max retries per identical error signature.
     if (attempts > 3) {
       logEntry(cid, { level: 'error', msg: `auto-heal stopped (too many retries): ${message}` });
+      clearValidationTimer(cid);
       setHealing(cid, false);
       const stable = stableFilesRef.current[cid];
       if (stable?.length) {
@@ -464,7 +502,7 @@ export default function App() {
     // Debounce/batch multiple fast errors into one heal attempt.
     if (healTimerRef.current[cid]) window.clearTimeout(healTimerRef.current[cid]);
     const delay = 450 + (attempts - 1) * 650;
-    setHealing(cid, true, `${err.source}: ${message}`);
+    setHealing(cid, true, { attempt: attempts, step: 'analyze', reason: `${err.source}: ${message}`, detail: 'Analyzing error and preparing targeted fix…' });
     logEntry(cid, { level: attempts > 1 ? 'warn' : 'error', msg: `auto-heal detected (${err.source}): ${message}` });
     try { window.dispatchEvent(new CustomEvent('forge:preview-reload')); } catch {}
 
@@ -477,9 +515,10 @@ export default function App() {
     if (isSrcDoc && focus.length === 0 && attempts >= 2) {
       const stable = stableFilesRef.current[cid];
       if (stable?.length) {
+        setHealing(cid, true, { attempt: attempts, step: 'rollback', reason: `${err.source}: ${message}`, detail: 'No file paths in srcdoc stack — reverting to stable snapshot…' });
         setConversations(cs => cs.map(c => c.id === cid ? { ...c, files: stable.map(f => ({ ...f })) } : c));
         log(cid, 'warn', `auto-heal: srcdoc error without file paths — rolled back to last stable snapshot`);
-        try { window.dispatchEvent(new CustomEvent('forge:preview-reload')); } catch {}
+        startValidation(cid, 'post-rollback validation');
       }
       return;
     }
@@ -511,7 +550,10 @@ export default function App() {
     healTimerRef.current[cid] = window.setTimeout(() => {
       healTimerRef.current[cid] = null;
       // Re-check current convo still active and not streaming.
-      if (!abortRef.current) send(repairPrompt, [], { internal: true });
+      if (!abortRef.current) {
+        setHealing(cid, true, { attempt: attempts, step: 'patch', reason: `${err.source}: ${message}`, detail: 'Applying patch…' });
+        send(repairPrompt, [], { internal: true });
+      }
     }, delay);
   }, [current?.id, current?.files, isStreaming]);
 
@@ -691,6 +733,12 @@ export default function App() {
         };
       }));
 
+      // If this was an internal auto-heal turn, validate by forcing a preview reload
+      // and waiting for the iframe to report readiness.
+      if (isInternal) {
+        startValidation(cid, 'post-patch validation');
+      }
+
       // Materialize any forge-doc blocks the model emitted into real Blob URLs.
       // We attach the realized docs to the assistant message itself so chat-side
       // DocumentCards render the right URLs and the workspace's Documents tab can
@@ -763,11 +811,13 @@ export default function App() {
     if (!current?.id || !current.files?.length || isStreaming) return;
     stableFilesRef.current[current.id] = current.files.map(f => ({ ...f }));
     healRef.current[current.id] = { attempts: 0, key: '', lastFilesSig: filesSignature(current.files || []) };
+    clearValidationTimer(current.id);
     setHealing(current.id, false);
     log(current.id, 'info', '✓ preview rendered successfully');
   }, [current?.id, current?.files, isStreaming]);
 
   const handleRuntimeError = React.useCallback((err) => {
+    if (current?.id && current?.healing?.step === 'validate') clearValidationTimer(current.id);
     scheduleHeal({ ...err, source: 'preview' });
   }, [current?.id, current?.files, isStreaming]);
 
