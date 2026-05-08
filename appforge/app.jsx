@@ -257,6 +257,56 @@ function newConversation() {
 // ---- Main App --------------------------------------------------------------
 
 export default function App() {
+  // Framework/language intent detection (strict prompt override).
+  const detectStackIntent = (prompt) => {
+    const t = String(prompt || '').toLowerCase();
+    const has = (re) => re.test(t);
+    const forbidReact = has(/\bwithout\s+react\b|\bno\s+react\b|\bnot\s+react\b|\bvanilla\s+js\b|\bplain\s+html\b|\bonly\s+html\b/);
+    if (has(/\bnext\.?js\b|\bnextjs\b/)) return { id: 'next', label: 'Next.js' };
+    if (has(/\bvue\.?js\b|\bvuejs\b|\bvue\b/)) return { id: 'vue', label: 'Vue' };
+    if (has(/\bangular\b/)) return { id: 'angular', label: 'Angular' };
+    if (has(/\bflask\b/)) return { id: 'flask', label: 'Flask (Python)' };
+    if (has(/\bdjango\b/)) return { id: 'django', label: 'Django (Python)' };
+    if (has(/\blaravel\b/)) return { id: 'laravel', label: 'Laravel (PHP)' };
+    if (has(/\bexpress\b/)) return { id: 'express', label: 'Express (Node.js)' };
+    if (has(/\bnode(\.js)?\b|\bbackend api\b|\brest api\b/)) return { id: 'node', label: 'Node.js' };
+    if (has(/\bpython\b/)) return { id: 'python', label: 'Python' };
+    if (!forbidReact && has(/\breact\b/)) return { id: 'react', label: 'React' };
+    if (has(/\bhtml\b|\bcss\b|\bjavascript\b|\bjs\b/) || forbidReact) return { id: 'static', label: 'HTML/CSS/Vanilla JS' };
+    return { id: 'static', label: 'HTML/CSS/Vanilla JS' };
+  };
+
+  const stackRulesBlock = (intent) => {
+    const id = intent?.id || 'static';
+    if (id === 'static') {
+      return [
+        '# STACK OVERRIDE (STRICT)',
+        'The user requested plain HTML/CSS/Vanilla JS (no React). You MUST follow this.',
+        '',
+        'Allowed files to create/update (preferred):',
+        '- index.html',
+        '- styles.css (or style.css)',
+        '- script.js (or main.js)',
+        '',
+        'Hard prohibitions:',
+        '- DO NOT create or update src/App.jsx, src/main.jsx, or any .jsx/.tsx files.',
+        '- DO NOT use React/JSX/Vite/Next/Vue.',
+        '',
+        'If the project already contains React files, ignore them and produce a static site in the files above.',
+      ].join('\n');
+    }
+    // Framework-specific: enforce requested stack and avoid switching.
+    return [
+      '# STACK OVERRIDE (STRICT)',
+      `The user requested ${intent.label}. You MUST follow this stack and ONLY generate files appropriate for it.`,
+      '',
+      'Hard prohibitions:',
+      '- Do NOT switch to a different framework.',
+      '- Do NOT generate unrelated boilerplate.',
+      '',
+      'If the existing project uses a different stack, migrate only if the user explicitly asked to.',
+    ].join('\n');
+  };
   const [theme, setTheme] = React.useState('dark');
   const [settings, setSettings] = React.useState(() => loadState()?.settings || DEFAULT_SETTINGS);
   const [conversations, setConversations] = React.useState(() => loadState()?.conversations || [newConversation()]);
@@ -644,6 +694,8 @@ export default function App() {
     // This is what makes the model evolve the existing codebase instead of
     // regenerating disconnected new code each turn.
     let system = SYSTEM_PROMPT + '\n\n' + projectContextBlock(baseFiles);
+    const intent = detectStackIntent(text);
+    system += '\n\n' + stackRulesBlock(intent);
     if (isRefactorRequest(text) && baseFiles.length) {
       system += '\n\n# THIS TURN IS A REFACTOR\nThe user is restructuring an existing project. PRESERVE all visuals, copy, layout, and behavior. Only change file structure / code organization. Do NOT introduce new UI or unrelated features.';
     }
@@ -689,6 +741,34 @@ export default function App() {
       // closing fence was the last thing to land.
       const finalOps = extractOps(acc);
       let finalFiles = applyOps(baseFiles, finalOps);
+
+      // Enforce intent: if user asked for static HTML but model only touched JSX/App.jsx,
+      // auto-regenerate once with a stronger constraint (prevents "always App.jsx" bug).
+      if (!isInternal && intent?.id === 'static') {
+        const touched = changedFiles(baseFiles, finalFiles);
+        const touchedJsx = touched.filter(n => /\.(jsx|tsx)$/.test(n));
+        const touchedStatic = touched.filter(n => /^(index\.html|styles?\.css|script\.js|main\.js)$/i.test(n));
+        if (touchedJsx.length && touchedStatic.length === 0) {
+          log(cid, 'warn', 'stack enforcement: model tried to output React/JSX for an HTML request — regenerating as static site');
+          // Roll back those changes and retry once as an internal constrained generation.
+          finalFiles = baseFiles;
+          const retryPrompt = [
+            'Regenerate the project STRICTLY as a static website.',
+            'You previously violated the stack by producing React/JSX.',
+            '',
+            'Output ONLY these files (and nothing else):',
+            '- index.html',
+            '- styles.css',
+            '- script.js',
+            '',
+            'No React. No JSX. No src/ folder. No package.json changes unless explicitly required.',
+          ].join('\n');
+          // Fire-and-forget follow-up generation; chat hides internal messages.
+          window.setTimeout(() => {
+            if (!abortRef.current) send(retryPrompt, [], { internal: true });
+          }, 250);
+        }
+      }
 
       if (isInternal) {
         const err = healRef.current[cid]?.lastError || null;
