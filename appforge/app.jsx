@@ -389,6 +389,24 @@ export default function App() {
     return out;
   };
 
+  const filesSignature = (files) => {
+    // Cheap stable signature: names + lengths + a few char codes.
+    let h = 5381;
+    for (const f of (files || [])) {
+      if (!f?.name) continue;
+      const name = String(f.name);
+      for (let i = 0; i < name.length; i++) h = ((h << 5) + h + name.charCodeAt(i)) | 0;
+      const code = String(f.code || '');
+      h = ((h << 5) + h + code.length) | 0;
+      // sample first/last chars for better discrimination
+      if (code.length) {
+        h = ((h << 5) + h + code.charCodeAt(0)) | 0;
+        h = ((h << 5) + h + code.charCodeAt(code.length - 1)) | 0;
+      }
+    }
+    return String(h);
+  };
+
   const setHealing = (id, active, reason) => {
     setConversations(cs => cs.map(c => c.id !== id ? c : ({ ...c, healing: active ? { active: true, reason: reason || '' } : null })));
   };
@@ -407,9 +425,26 @@ export default function App() {
 
     const state = healRef.current[cid] || { attempts: 0, key: '' };
     const attempts = state.key === key ? state.attempts + 1 : 1;
+    const sig = filesSignature(current.files || []);
+    const sameSnapshot = state.key === key && state.lastFilesSig === sig;
+
+    // If the exact same error repeats without any code changes, don't spam the model.
+    // Prefer preview-only recovery (rollback to last stable + reload).
+    if (sameSnapshot && attempts >= 2) {
+      const stable = stableFilesRef.current[cid];
+      if (stable?.length) {
+        setConversations(cs => cs.map(c => c.id === cid ? { ...c, files: stable.map(f => ({ ...f })) } : c));
+        log(cid, 'warn', `auto-heal: repeated identical error with no code changes — rolled back to last stable snapshot`);
+      } else {
+        log(cid, 'warn', `auto-heal: repeated identical error with no code changes — forcing preview reload`);
+      }
+      try { window.dispatchEvent(new CustomEvent('forge:preview-reload')); } catch {}
+      return;
+    }
     healRef.current[cid] = {
       attempts,
       key,
+      lastFilesSig: sig,
       lastError: { source: err.source, message, stack },
       lastEdit: lastEditRef.current[cid] || null,
     };
@@ -436,6 +471,18 @@ export default function App() {
     const filesNow = current.files || [];
     const guessed = guessRelevantFiles({ message, stack }, filesNow);
     const focus = [...new Set([...(guessed || []), ...(lastEditRef.current[cid] ? [lastEditRef.current[cid]] : [])])].filter(Boolean);
+
+    // about:srcdoc stacks often lack real module file paths; rollback-first avoids useless rewrites.
+    const isSrcDoc = (stack || '').includes('about:srcdoc') || (message || '').includes('about:srcdoc');
+    if (isSrcDoc && focus.length === 0 && attempts >= 2) {
+      const stable = stableFilesRef.current[cid];
+      if (stable?.length) {
+        setConversations(cs => cs.map(c => c.id === cid ? { ...c, files: stable.map(f => ({ ...f })) } : c));
+        log(cid, 'warn', `auto-heal: srcdoc error without file paths — rolled back to last stable snapshot`);
+        try { window.dispatchEvent(new CustomEvent('forge:preview-reload')); } catch {}
+      }
+      return;
+    }
 
     const repairPrompt = [
       'Auto-fix the current project. The app/preview has errors and must self-heal until it runs successfully.',
@@ -554,6 +601,7 @@ export default function App() {
     const assistantMsg = {
       id: 'm_' + Math.random().toString(36).slice(2,9),
       role: 'assistant', content: '', model: current.model, tokens: null,
+      internal: !!opts.internal,
     };
     updateConvo(cid, c => ({ messages: [...c.messages, assistantMsg] }));
 
@@ -714,7 +762,7 @@ export default function App() {
   const handlePreviewReady = React.useCallback(() => {
     if (!current?.id || !current.files?.length || isStreaming) return;
     stableFilesRef.current[current.id] = current.files.map(f => ({ ...f }));
-    healRef.current[current.id] = { attempts: 0, key: '' };
+    healRef.current[current.id] = { attempts: 0, key: '', lastFilesSig: filesSignature(current.files || []) };
     setHealing(current.id, false);
     log(current.id, 'info', '✓ preview rendered successfully');
   }, [current?.id, current?.files, isStreaming]);
