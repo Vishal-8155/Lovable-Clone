@@ -336,6 +336,7 @@ export default function App() {
     } : c));
   };
   const log = (id, level, msg) => logEntry(id, { level, msg });
+  const lastEditRef = React.useRef({});
 
   const normalizeErr = (err) => ({
     message: String(err?.message || err?.msg || 'Error'),
@@ -343,6 +344,50 @@ export default function App() {
     source: err?.source || 'app',
     data: err?.data || null,
   });
+
+  const fileByName = (list, name) => (list || []).find(f => f?.name === name) || null;
+  const upsertFile = (list, file) => {
+    const next = [...(list || [])];
+    const i = next.findIndex(f => f?.name === file?.name);
+    if (i >= 0) next[i] = { ...next[i], ...file };
+    else next.push(file);
+    return next;
+  };
+  const changedFiles = (before, after) => {
+    const b = new Map((before || []).map(f => [f.name, f.code]));
+    const a = new Map((after || []).map(f => [f.name, f.code]));
+    const names = new Set([...b.keys(), ...a.keys()]);
+    const out = [];
+    for (const n of names) if (b.get(n) !== a.get(n)) out.push(n);
+    return out;
+  };
+  const guessRelevantFiles = ({ message = '', stack = '' }, files) => {
+    const text = `${message}\n${stack}`;
+    const hits = new Set();
+    const re = /(?:^|[\s(])((?:\/)?src\/[A-Za-z0-9_./-]+\.(?:jsx|tsx|js|ts|mjs|cjs))/g;
+    let m;
+    while ((m = re.exec(text))) hits.add(m[1].replace(/^\//, ''));
+    const list = [...hits].filter(n => fileByName(files, n));
+    return list;
+  };
+  const protectEntryFromAutoHeal = ({ baseFiles, nextFiles, stableFiles, err }) => {
+    const entryNames = ['src/App.jsx', 'src/App.tsx', 'App.jsx', 'App.tsx'];
+    const hasEntryChange = entryNames.some(n => fileByName(baseFiles, n)?.code !== fileByName(nextFiles, n)?.code);
+    if (!hasEntryChange) return nextFiles;
+    const msg = String(err?.message || '');
+    const stk = String(err?.stack || '');
+    const mentionsEntry = entryNames.some(n => msg.includes(n) || stk.includes(n));
+    if (mentionsEntry) return nextFiles;
+    const stable = stableFiles || baseFiles;
+    let out = nextFiles;
+    for (const n of entryNames) {
+      const stableEntry = fileByName(stable, n);
+      const baseEntry = fileByName(baseFiles, n);
+      if (!stableEntry && !baseEntry) continue;
+      out = upsertFile(out, stableEntry || baseEntry);
+    }
+    return out;
+  };
 
   const setHealing = (id, active, reason) => {
     setConversations(cs => cs.map(c => c.id !== id ? c : ({ ...c, healing: active ? { active: true, reason: reason || '' } : null })));
@@ -362,7 +407,12 @@ export default function App() {
 
     const state = healRef.current[cid] || { attempts: 0, key: '' };
     const attempts = state.key === key ? state.attempts + 1 : 1;
-    healRef.current[cid] = { attempts, key };
+    healRef.current[cid] = {
+      attempts,
+      key,
+      lastError: { source: err.source, message, stack },
+      lastEdit: lastEditRef.current[cid] || null,
+    };
 
     // Guardrails: max retries per identical error signature.
     if (attempts > 3) {
@@ -383,6 +433,10 @@ export default function App() {
     logEntry(cid, { level: attempts > 1 ? 'warn' : 'error', msg: `auto-heal detected (${err.source}): ${message}` });
     try { window.dispatchEvent(new CustomEvent('forge:preview-reload')); } catch {}
 
+    const filesNow = current.files || [];
+    const guessed = guessRelevantFiles({ message, stack }, filesNow);
+    const focus = [...new Set([...(guessed || []), ...(lastEditRef.current[cid] ? [lastEditRef.current[cid]] : [])])].filter(Boolean);
+
     const repairPrompt = [
       'Auto-fix the current project. The app/preview has errors and must self-heal until it runs successfully.',
       '',
@@ -394,9 +448,14 @@ export default function App() {
       'Stack trace / details:',
       stack || '(no stack trace)',
       '',
+      focus.length
+        ? 'Likely related files (prioritize these; change as little as possible):\n- ' + focus.join('\n- ')
+        : 'No concrete file path in stack trace (about:srcdoc). Make the smallest possible fix.',
+      '',
       'Requirements:',
       '- Modify only the files needed to fix the runtime/build/import/dependency problem.',
       '- Preserve the current UI and behavior.',
+      '- Do NOT rewrite the entire app. Avoid touching src/App.jsx unless the error clearly comes from it.',
       '- Fix broken imports/exports, missing packages, invalid JSX, runtime crashes, and module resolution issues.',
       '- If a fix makes things worse, revert to the last stable working version and try a different minimal fix.',
       '- Do NOT introduce unrelated features.',
@@ -450,6 +509,7 @@ export default function App() {
   const send = async (text, attachments = [], opts = {}) => {
     if (!current || isStreaming) return;
     const cid = current.id;
+    const isInternal = !!opts.internal;
     // Persist enough of each attachment to (a) re-render the original card in
     // chat history, and (b) re-build the API content blocks on resend. We strip
     // the raw `file` reference but keep dataUrl (images), extracted text
@@ -550,7 +610,18 @@ export default function App() {
       // Final merge — include in-flight (still-streaming) files too in case the
       // closing fence was the last thing to land.
       const finalOps = extractOps(acc);
-      const finalFiles = applyOps(baseFiles, finalOps);
+      let finalFiles = applyOps(baseFiles, finalOps);
+
+      if (isInternal) {
+        const err = healRef.current[cid]?.lastError || null;
+        const stable = stableFilesRef.current[cid] || null;
+        finalFiles = protectEntryFromAutoHeal({ baseFiles, nextFiles: finalFiles, stableFiles: stable, err });
+        const changed = changedFiles(baseFiles, finalFiles);
+        if (changed.length > 8) {
+          log(cid, 'error', `auto-heal produced too many changes (${changed.length}); rolling back to last stable snapshot`);
+          if (stable?.length) finalFiles = stable.map(f => ({ ...f }));
+        }
+      }
 
       const created = finalOps.files.filter(f => !baseFiles.find(b => b.name === f.name));
       const updated = finalOps.files.filter(f => baseFiles.find(b => b.name === f.name));
@@ -699,6 +770,7 @@ export default function App() {
   const setFile = (name, code) => {
     if (!current?.id) return;
     const cid = current.id;
+    lastEditRef.current[cid] = name;
     setConversations(cs => cs.map(c => c.id !== cid ? c : {
       ...c, files: c.files.map(f => f.name === name ? { ...f, code } : f),
     }));
