@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AppForge — AI App Builder</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: {
+          forge: {
+            50:  '#f5f3ff',
+            100: '#ede9fe',
+            200: '#ddd6fe',
+            300: '#c4b5fd',
+            400: '#a78bfa',
+            500: '#8b5cf6',
+            600: '#7c3aed',
+            700: '#6d28d9',
+            800: '#5b21b6',
+            900: '#4c1d95',
+          },
+          ink: {
+            950: '#0a0a0f',
+            900: '#0f0f17',
+            850: '#13131c',
+            800: '#1a1a25',
+            750: '#22222f',
+            700: '#2a2a3a',
+            600: '#3a3a4f',
+            500: '#5a5a72',
+            400: '#8888a3',
+            300: '#b4b4c8',
+            200: '#d4d4e0',
+            100: '#ececf2',
+          }
+        },
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+          display: ['Instrument Serif', 'ui-serif', 'serif'],
+        },
+        keyframes: {
+          'pulse-soft': { '0%,100%': { opacity: '0.4' }, '50%': { opacity: '1' } },
+          'shimmer': { '0%': { backgroundPosition: '-200% 0' }, '100%': { backgroundPosition: '200% 0' } },
+          'fade-up': { '0%': { opacity: '0', transform: 'translateY(8px)' }, '100%': { opacity: '1', transform: 'translateY(0)' } },
+          'slide-in': { '0%': { transform: 'translateX(-100%)' }, '100%': { transform: 'translateX(0)' } },
+          'spark': { '0%,100%': { transform: 'scale(1) rotate(0)' }, '50%': { transform: 'scale(1.15) rotate(180deg)' } },
+        },
+        animation: {
+          'pulse-soft': 'pulse-soft 1.4s ease-in-out infinite',
+          'shimmer': 'shimmer 2.4s linear infinite',
+          'fade-up': 'fade-up 0.4s ease-out',
+          'slide-in': 'slide-in 0.3s ease-out',
+          'spark': 'spark 2.4s ease-in-out infinite',
+        }
+      }
+    }
+  }
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+</head>
+<body class="font-sans">
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>

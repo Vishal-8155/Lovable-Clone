@@ -1,0 +1,166 @@
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: #0a0a0f;
+  color: #ececf2;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+.scroll-fine::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-fine::-webkit-scrollbar-track { background: transparent; }
+.scroll-fine::-webkit-scrollbar-thumb {
+  background: rgba(124, 58, 237, 0.18);
+  border-radius: 4px;
+}
+.scroll-fine::-webkit-scrollbar-thumb:hover { background: rgba(124, 58, 237, 0.4); }
+
+.glass {
+  background: rgba(26, 26, 37, 0.55);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.glass-light {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.aurora::before {
+  content: '';
+  position: absolute;
+  inset: -40%;
+  background:
+    radial-gradient(50% 40% at 20% 30%, rgba(124, 58, 237, 0.18), transparent 70%),
+    radial-gradient(45% 35% at 80% 80%, rgba(45, 212, 191, 0.10), transparent 70%),
+    radial-gradient(40% 30% at 70% 20%, rgba(244, 114, 182, 0.10), transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(20px);
+}
+
+pre.code-block {
+  background: #0d0d14;
+  border: 1px solid rgba(124, 58, 237, 0.18);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #d4d4e0;
+}
+.code-block .tk-keyword { color: #c4b5fd; }
+.code-block .tk-string  { color: #86efac; }
+.code-block .tk-comment { color: #6b7280; font-style: italic; }
+.code-block .tk-number  { color: #fbbf24; }
+.code-block .tk-fn      { color: #93c5fd; }
+.code-block .tk-tag     { color: #f9a8d4; }
+
+.typing-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #a78bfa;
+  display: inline-block;
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.18s; }
+.typing-dot:nth-child(3) { animation-delay: 0.36s; }
+@keyframes typing-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-5px); opacity: 1; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #1a1a25 0%, #22222f 50%, #1a1a25 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.light body, body.light { background: #fafaf9; color: #18181b; }
+.light .glass { background: rgba(255,255,255,0.75); border-color: rgba(0,0,0,0.06); }
+.light pre.code-block { background: #f4f4f5; border-color: rgba(124,58,237,0.18); color: #27272a; }
+.light .code-block .tk-comment { color: #9ca3af; }
+
+input[type=range].forge-range {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  background: linear-gradient(to right, #7c3aed var(--val,50%), #2a2a3a var(--val,50%));
+  border-radius: 999px;
+  outline: none;
+}
+input[type=range].forge-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #7c3aed;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(124,58,237,0.4);
+}
+
+.preview-frame {
+  width: 100%; height: 100%;
+  background: #fff;
+  border: 0;
+  border-radius: 8px;
+}
+
+.logo-gradient {
+  background: linear-gradient(135deg, #a78bfa 0%, #7c3aed 50%, #f472b6 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(124,58,237,0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(124,58,237,0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.resizer {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.2s;
+  position: relative;
+}
+.resizer:hover, .resizer.dragging { background: rgba(124, 58, 237, 0.5); }
+.resizer::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px; height: 32px;
+  background: rgba(124, 58, 237, 0.3);
+  border-radius: 2px;
+}
+
+.logo-mark {
+  background: conic-gradient(from 180deg at 50% 50%, #7c3aed, #f472b6, #a78bfa, #7c3aed);
+  border-radius: 6px;
+  position: relative;
+}
+.logo-mark::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  background: #0a0a0f;
+  border-radius: 4px;
+}
+.logo-mark::before {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  background: linear-gradient(135deg, #a78bfa, #f472b6);
+  border-radius: 2px;
+  z-index: 1;
+}
