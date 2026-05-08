@@ -11,9 +11,15 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "docx": "^9.6.1",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.7",
+    "pdfjs-dist": "^5.7.284",
+    "pptxgenjs": "^4.0.1",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "vite": "latest",
+    "xlsx": "^0.18.5"
   },
   "engines": {
     "node": ">=18"

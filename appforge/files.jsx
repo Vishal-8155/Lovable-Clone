@@ -35,13 +35,97 @@ export function extractFiles(text) {
   return files;
 }
 
+// Extract delete / rename / move operations the model can emit alongside file
+// fences. The protocol is intentionally minimal so it survives prose well:
+//   [forge:delete src/old/path.jsx]
+//   [forge:rename src/old.jsx -> src/new.jsx]
+//   [forge:move   src/foo.jsx => src/components/foo.jsx]
+export function extractDeletes(text) {
+  if (!text) return [];
+  const out = [];
+  const re = /\[forge:delete\s+([^\]\n]+?)\s*\]/gi;
+  let m;
+  while ((m = re.exec(text))) out.push(m[1].trim());
+  return [...new Set(out)];
+}
+
+export function extractRenames(text) {
+  if (!text) return [];
+  const out = [];
+  const re = /\[forge:(?:rename|move)\s+([^\]\n]+?)\s*(?:->|=>|→)\s*([^\]\n]+?)\s*\]/gi;
+  let m;
+  while ((m = re.exec(text))) out.push({ from: m[1].trim(), to: m[2].trim() });
+  return out;
+}
+
+// Aggregate every operation present in the streamed text so far.
+export function extractOps(text) {
+  return {
+    files: extractFiles(text),
+    deletes: extractDeletes(text),
+    renames: extractRenames(text),
+  };
+}
+
+// Merge a set of operations into the existing file list. This is the heart of
+// the "evolve the same project" behavior — files NOT mentioned in `ops` are
+// preserved untouched. Renames are applied first (so a rename + update in the
+// same turn lands at the new path), then deletes, then creates/updates.
+export function applyOps(existing, ops) {
+  let next = [...(existing || [])];
+
+  for (const r of ops?.renames || []) {
+    const i = next.findIndex(f => f.name === r.from);
+    if (i >= 0) next[i] = { ...next[i], name: r.to };
+  }
+
+  if (ops?.deletes?.length) {
+    const drop = new Set(ops.deletes);
+    next = next.filter(f => !drop.has(f.name));
+  }
+
+  for (const f of ops?.files || []) {
+    const i = next.findIndex(x => x.name === f.name);
+    if (i >= 0) next[i] = { ...next[i], ...f };
+    else next.push(f);
+  }
+
+  return next;
+}
+
+// Same as applyOps but only treats COMPLETE files as updates so we don't
+// clobber the previous good version of a file with a half-streamed fence.
+// Used during streaming for live preview updates.
+export function applyOpsLive(existing, ops) {
+  const safeFiles = (ops?.files || []).filter(f => f.complete);
+  return applyOps(existing, { ...ops, files: safeFiles });
+}
+
 export function pickPreviewFile(files) {
   if (!files || !files.length) return null;
+  // Strong preferences for the canonical entry — fall through to anything reactish.
+  const ENTRY_PRIORITY = [
+    /^(?:\/)?src\/App\.(jsx|tsx)$/i,
+    /^(?:\/)?App\.(jsx|tsx)$/i,
+    /^(?:\/)?src\/main\.(jsx|tsx)$/i,
+    /^(?:\/)?src\/index\.(jsx|tsx)$/i,
+    /^(?:\/)?src\/pages\/index\.(jsx|tsx)$/i,
+  ];
+  for (const re of ENTRY_PRIORITY) {
+    const hit = files.find(f => re.test(f.name));
+    if (hit) return hit;
+  }
   const reactish = files.find(f => /\.(jsx|tsx)$/.test(f.name));
   if (reactish) return reactish;
   const html = files.find(f => /\.html?$/.test(f.name));
   if (html) return html;
   return files[0];
+}
+
+// Whether a file is a compilable JS/TS source. Used to filter the project down
+// to the modules the live preview should ship into the iframe's virtual FS.
+export function isSourceFile(file) {
+  return !!file && typeof file.name === 'string' && /\.(jsx|tsx|js|ts|mjs|cjs)$/i.test(file.name);
 }
 
 export function buildTree(files) {
@@ -152,22 +236,20 @@ const FileTreeRow = ({ node, depth, expanded, toggleDir, onSelect, onContext, ac
   );
 };
 
-// Persistent UI state for explorer/tabs
-const EXPLORER_KEY = 'appforge.ide.v1';
-export function loadIde() {
-  try { return JSON.parse(localStorage.getItem(EXPLORER_KEY) || '{}'); } catch { return {}; }
-}
-export function saveIde(p) {
-  try { localStorage.setItem(EXPLORER_KEY, JSON.stringify(p)); } catch {}
-}
-
-export function FileExplorer({ files, active, onSelect, onContext }) {
-  const initial = loadIde();
+// FileExplorer is fully controlled — `expanded` (folder open/closed map) is owned by
+// the parent so it can be stored per-conversation. This prevents one chat's expansion
+// state from leaking into another and ensures a fresh chat starts clean.
+export function FileExplorer({ files, active, onSelect, onContext, expanded: expandedProp, onExpandedChange }) {
   const [query, setQuery] = React.useState('');
-  const [expanded, setExpanded] = React.useState(initial.expanded || {});
-  React.useEffect(() => { saveIde({ ...loadIde(), expanded }); }, [expanded]);
+  const [internalExpanded, setInternalExpanded] = React.useState({});
+  const isControlled = expandedProp !== undefined;
+  const expanded = isControlled ? expandedProp : internalExpanded;
 
-  const toggleDir = (path) => setExpanded(e => ({ ...e, [path]: e[path] === false ? true : false }));
+  const toggleDir = (path) => {
+    const next = { ...expanded, [path]: expanded[path] === false ? true : false };
+    if (isControlled) onExpandedChange?.(next);
+    else setInternalExpanded(next);
+  };
 
   const tree = React.useMemo(() => buildTree(files || []), [files]);
   const rootEntries = Object.values(tree.children).sort((a, b) => {

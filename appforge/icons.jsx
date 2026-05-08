@@ -40,6 +40,8 @@ export const IconLayout = (p) => <Icon {...p}><rect width="18" height="18" x="3"
 export const IconChart = (p) => <Icon {...p}><path d="M3 3v18h18" /><path d="m7 14 4-4 4 4 5-5" /></Icon>;
 export const IconCloud = (p) => <Icon {...p}><path d="M17.5 19a4.5 4.5 0 1 0-1.4-8.78 7 7 0 0 0-13.6 2.28A4.5 4.5 0 0 0 5 19" /></Icon>;
 export const IconList = (p) => <Icon {...p}><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></Icon>;
+export const IconFileDoc = (p) => <Icon {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M9 13h6" /><path d="M9 17h6" /><path d="M9 9h2" /></Icon>;
+export const IconBrush = (p) => <Icon {...p}><path d="M9.06 11.9 8.07 10.92a2.45 2.45 0 0 1 0-3.46l4.54-4.54a2.45 2.45 0 0 1 3.46 0l1.04 1.04a2.45 2.45 0 0 1 0 3.46l-4.54 4.54a2.45 2.45 0 0 1-3.46 0Z" /><path d="M7.07 14.94 4.5 17.5a2.45 2.45 0 0 0 0 3.46l1.04 1.04a2.45 2.45 0 0 0 3.46 0L11.56 19" /></Icon>;
 
 // Model badge dots — pure CSS dots so the chip stays tiny
 export const ModelDot = ({ color }) => (

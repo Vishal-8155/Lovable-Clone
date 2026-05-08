@@ -1,24 +1,31 @@
 // Collapsible conversation history sidebar
-import { IconChevronLeft, IconHistory, IconTrash } from './icons.jsx';
+import { IconChevronLeft, IconHistory, IconTrash, IconX } from './icons.jsx';
 
-export function HistorySidebar({ open, conversations, currentId, onPick, onDelete, onClose, onToggle, totalTokens }) {
+export function HistorySidebar({ open, conversations, currentId, onPick, onDelete, onClose, onToggle, totalTokens, isMobile }) {
+  // On mobile the sidebar is a slide-in drawer (CSS positions it fixed). It
+  // always renders its full content; the drawer's close button dismisses it.
+  // On desktop, width animates between 48px (collapsed) and 248px (expanded).
+  const showFull = isMobile ? true : open;
+  const desktopWidth = open ? 248 : 48;
+
   return (
     <div
-      className={`flex-none flex flex-col h-full bg-ink-950 border-r border-ink-800/80 transition-all duration-300 overflow-hidden`}
-      style={{ width: open ? 248 : 48 }}
+      data-open={open ? 'true' : 'false'}
+      className={`history-sidebar flex-none flex flex-col h-full bg-ink-950 border-r border-ink-800/80 transition-all duration-300 overflow-hidden`}
+      style={isMobile ? undefined : { width: desktopWidth }}
     >
       <div className="flex items-center justify-between px-3 py-3 border-b border-ink-800/80">
         <button
-          onClick={onToggle}
+          onClick={isMobile ? onClose : onToggle}
           className="p-1.5 rounded-md hover:bg-ink-800 text-ink-300 hover:text-white transition flex-none"
-          title={open ? 'Collapse history' : 'Expand history'}
+          title={isMobile ? 'Close history' : (open ? 'Collapse history' : 'Expand history')}
         >
-          {open ? <IconChevronLeft size={14} /> : <IconHistory size={14} />}
+          {isMobile ? <IconX size={14} /> : (open ? <IconChevronLeft size={14} /> : <IconHistory size={14} />)}
         </button>
-        {open && <div className="text-[10.5px] uppercase tracking-[0.16em] text-ink-500 font-mono">history</div>}
+        {showFull && <div className="text-[10.5px] uppercase tracking-[0.16em] text-ink-500 font-mono">history</div>}
       </div>
 
-      {open ? (
+      {showFull ? (
         <>
           <div className="flex-1 overflow-y-auto scroll-fine px-2 py-2 space-y-1">
             {conversations.length === 0 && (

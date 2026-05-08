@@ -17,6 +17,7 @@ import {
   ModelDot,
 } from './icons.jsx';
 import { renderMessageBody } from './highlighter.jsx';
+import { extractAttachment, fileIcon, fileMeta, formatBytes } from './attachments.jsx';
 
 export const MODELS = [
   { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4',  provider: 'Anthropic', color: '#d97706' },
@@ -111,7 +112,88 @@ function ImageLightbox({ src, name, onClose }) {
   );
 }
 
-export function MessageView({ msg, onCopyCode, onRetry, onPreview }) {
+// Per-message error boundary. Wraps each rendered chat message so that a
+// rendering bug (e.g. malformed markdown, oversized stack trace exploding the
+// highlighter) cannot blow up the entire chat — the offending message degrades
+// gracefully to a plain text fallback.
+class MessageBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch() { /* swallowed — fallback UI handles it */ }
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3.5 py-2.5 text-[12.5px] text-red-200 forge-wrap">
+          <div className="flex items-center gap-2 mb-1.5 text-red-300">
+            <IconAlert size={13} />
+            <span className="font-medium">Couldn't render this message</span>
+          </div>
+          <pre className="forge-errpre text-red-200/90 max-h-40 overflow-auto scroll-fine">
+            {String(this.state.err?.message || this.state.err || 'Unknown render error')}
+          </pre>
+          {this.props.fallbackText && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-[11px] text-red-300/80 hover:text-red-200">Show raw content</summary>
+              <pre className="forge-errpre mt-1.5 text-ink-300 max-h-48 overflow-auto scroll-fine">
+                {this.props.fallbackText}
+              </pre>
+            </details>
+          )}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Collapsible runtime-error card. Short errors render expanded; long errors
+// (stack traces with deep esm.sh URLs etc.) collapse behind a toggle so they
+// can't push the chat layout outward. The pre block is fully scrollable.
+function ErrorCard({ message, onRetry }) {
+  const text = String(message || '').trim();
+  const lineCount = text ? text.split('\n').length : 0;
+  const isLong = lineCount > 3 || text.length > 220;
+  const [expanded, setExpanded] = React.useState(!isLong);
+  return (
+    <div className="mt-2 rounded-xl bg-red-500/10 border border-red-500/30 overflow-hidden">
+      <div className="flex items-start gap-2 px-3 py-2">
+        <IconAlert size={14} className="flex-none mt-0.5 text-red-300" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2 mb-0.5">
+            <span className="text-[12.5px] font-medium text-red-200">Runtime error</span>
+            <div className="flex items-center gap-1">
+              {isLong && (
+                <button
+                  onClick={() => setExpanded(e => !e)}
+                  className="px-2 py-0.5 rounded bg-red-500/15 hover:bg-red-500/25 text-red-200 text-[11px] transition"
+                >
+                  {expanded ? 'Hide details' : 'Show details'}
+                </button>
+              )}
+              <button
+                onClick={() => onRetry?.()}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-200 text-[11px] transition"
+              >
+                <IconRefresh size={11} /> Retry
+              </button>
+            </div>
+          </div>
+          {expanded ? (
+            <pre className="forge-errpre text-red-100/90 max-h-56 overflow-auto scroll-fine pr-1">
+              {text || 'Generation failed.'}
+            </pre>
+          ) : (
+            <div className="forge-wrap text-[12px] text-red-200/80 line-clamp-1 truncate">
+              {text.split('\n')[0]}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function MessageView({ msg, onCopyCode, onRetry, onPreview, onPreviewDoc, onRegenerateDoc }) {
   const m = MODELS.find(x => x.id === msg.model) || MODELS[0];
   const isUser = msg.role === 'user';
   const [lightbox, setLightbox] = React.useState(null);
@@ -123,58 +205,91 @@ export function MessageView({ msg, onCopyCode, onRetry, onPreview }) {
   if (isUser) {
     const atts = msg.attachments || [];
     return (
-      <div className="flex justify-end animate-fade-up">
-        <div className="max-w-[85%] bg-forge-600/15 border border-forge-600/25 rounded-2xl rounded-tr-sm px-3.5 py-2.5">
-          {atts.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-2">
-              {atts.map((a, i) => (
-                <button
-                  key={i}
-                  onClick={() => handlePreview({ kind: 'image', src: a.dataUrl, name: a.name })}
-                  className="group relative rounded-xl overflow-hidden border border-white/10 bg-ink-900/50 backdrop-blur-md hover:border-forge-400/60 transition"
-                >
-                  <img src={a.dataUrl} alt={a.name || 'attachment'} className="max-h-44 max-w-[220px] object-cover block" />
-                  <span className="absolute inset-0 flex items-end justify-end p-1.5 opacity-0 group-hover:opacity-100 transition bg-gradient-to-t from-black/60 to-transparent">
-                    <span className="text-[10px] font-mono text-white/90 px-1.5 py-0.5 rounded bg-black/40">expand</span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          {msg.content && <div className="text-[14px] leading-relaxed text-ink-100 whitespace-pre-wrap">{msg.content}</div>}
+      <MessageBoundary fallbackText={msg.content}>
+        <div className="flex justify-end animate-fade-up min-w-0">
+          <div className="max-w-[85%] min-w-0 bg-forge-600/15 border border-forge-600/25 rounded-2xl rounded-tr-sm px-3.5 py-2.5 overflow-hidden">
+            {atts.length > 0 && (
+              <div className="flex flex-col gap-1.5 mb-2">
+                {atts.map((a, i) => {
+                  const isImg = (a.kind === 'image' || a.category === 'image') && a.dataUrl;
+                  if (isImg) {
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => handlePreview({ kind: 'image', src: a.dataUrl, name: a.name })}
+                        className="group relative rounded-xl overflow-hidden border border-white/10 bg-ink-900/50 backdrop-blur-md hover:border-forge-400/60 transition self-start"
+                      >
+                        <img src={a.dataUrl} alt={a.name || 'attachment'} className="max-h-44 max-w-[220px] object-cover block" />
+                        <span className="absolute inset-0 flex items-end justify-end p-1.5 opacity-0 group-hover:opacity-100 transition bg-gradient-to-t from-black/60 to-transparent">
+                          <span className="text-[10px] font-mono text-white/90 px-1.5 py-0.5 rounded bg-black/40">expand</span>
+                        </span>
+                      </button>
+                    );
+                  }
+                  const palette = a.palette || { bg: 'bg-ink-800', fg: 'text-ink-300' };
+                  const cat = a.category || 'file';
+                  const label = a.label || (a.name?.split('.').pop() || 'FILE').toUpperCase();
+                  return (
+                    <div key={i} className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-ink-900/60 border border-white/10 max-w-full">
+                      <div className={`flex-none w-7 h-7 rounded-md flex items-center justify-center ${palette.bg} ${palette.fg}`}>
+                        {fileIcon(cat)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12px] text-ink-100 truncate">{a.name}</div>
+                        <div className="text-[10px] font-mono text-ink-500 flex items-center gap-1.5">
+                          <span>{formatBytes(a.size || 0)}</span>
+                          <span className="text-ink-700">·</span>
+                          <span>{label}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {msg.content && (
+              <div className="text-[14px] leading-relaxed text-ink-100 whitespace-pre-wrap forge-wrap max-h-[420px] overflow-y-auto scroll-fine pr-0.5">
+                {msg.content}
+              </div>
+            )}
+          </div>
+          {lightbox && <ImageLightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
         </div>
-        {lightbox && <ImageLightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
-      </div>
+      </MessageBoundary>
     );
   }
 
   return (
-    <div className="flex items-start gap-3 animate-fade-up">
-      <div className="flex-none w-7 h-7 rounded-md bg-gradient-to-br from-forge-500 to-pink-400 flex items-center justify-center mt-0.5">
-        <IconSparkles size={14} className="text-white" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-[10.5px] uppercase tracking-[0.14em] text-ink-500 font-mono mb-1.5 flex items-center gap-1.5">
-          <ModelDot color={m.color} /> {m.label}
+    <MessageBoundary fallbackText={msg.content}>
+      <div className="flex items-start gap-3 animate-fade-up min-w-0">
+        <div className="flex-none w-7 h-7 rounded-md bg-gradient-to-br from-forge-500 to-pink-400 flex items-center justify-center mt-0.5">
+          <IconSparkles size={14} className="text-white" />
         </div>
-        <div className="space-y-1">{renderMessageBody(msg.content, { onCopy: onCopyCode, onPreview })}</div>
-        {msg.error && (
-          <div className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-[12.5px]">
-            <IconAlert size={14} />
-            <span className="flex-1">{msg.error}</span>
-            <button onClick={() => onRetry?.(msg)} className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-200 text-[11px]">
-              <IconRefresh size={11} /> Retry
-            </button>
+        <div className="flex-1 min-w-0 max-w-full overflow-hidden">
+          <div className="text-[10.5px] uppercase tracking-[0.14em] text-ink-500 font-mono mb-1.5 flex items-center gap-1.5">
+            <ModelDot color={m.color} /> {m.label}
           </div>
-        )}
+          <div className="space-y-1 forge-wrap">
+            {renderMessageBody(msg.content, {
+              onCopy: onCopyCode,
+              onPreview,
+              docs: msg.docs,
+              onPreviewDoc,
+              onRegenerateDoc,
+            })}
+          </div>
+          {msg.error && <ErrorCard message={msg.error} onRetry={() => onRetry?.(msg)} />}
+        </div>
       </div>
-    </div>
+    </MessageBoundary>
   );
 }
 
 export function ChatPanel({
   width, messages, isStreaming, model, onModelChange,
   onSend, onNewChat, onRetry, onStop, onPreview, hasApiKey,
+  onPreviewDoc, onRegenerateDoc,
+  isMobile, onOpenSidebar, onShowWorkspace,
 }) {
   const [input, setInput] = React.useState('');
   const [menuOpen, setMenuOpen] = React.useState(false);
@@ -195,28 +310,75 @@ export function ChatPanel({
     showToast._t = setTimeout(() => setToast(null), 2400);
   };
 
+  // Per-file size cap. Images are shipped as base64 to multimodal models so
+  // they're capped tight; other files (whose content is mostly extracted to
+  // text) get a much larger ceiling so users can attach long PDFs / sheets.
+  const sizeLimitFor = (file) => (file.type?.startsWith('image/') ? 8 * 1024 * 1024 : 32 * 1024 * 1024);
+
   const ingestFiles = async (fileList) => {
     const files = Array.from(fileList || []);
+    if (!files.length) return;
+
+    // Phase 1: instantly seed cards in `reading` state so the user sees feedback
+    const seeds = [];
     for (const f of files) {
-      if (f.size > 8 * 1024 * 1024) { showToast(`${f.name} is too large (8MB max)`); continue; }
-      const isImg = f.type.startsWith('image/');
-      try {
-        const dataUrl = await new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(r.result);
-          r.onerror = reject;
-          r.readAsDataURL(f);
-        });
-        setAttachments(a => [...a, {
-          id: 'a_' + Math.random().toString(36).slice(2, 9),
-          kind: isImg ? 'image' : 'file',
-          name: f.name || (isImg ? 'screenshot.png' : 'file'),
-          size: f.size,
-          mime: f.type || 'application/octet-stream',
-          dataUrl,
-        }]);
-      } catch { showToast(`Could not read ${f.name}`); }
+      if (f.size > sizeLimitFor(f)) {
+        showToast(`${f.name} is too large (${formatBytes(sizeLimitFor(f))} max)`);
+        continue;
+      }
+      const meta = fileMeta(f);
+      seeds.push({
+        id: 'a_' + Math.random().toString(36).slice(2, 9),
+        file: f,
+        name: f.name || `${meta.category}-${Date.now()}.${meta.ext || 'bin'}`,
+        size: f.size,
+        mime: f.type || 'application/octet-stream',
+        category: meta.category,
+        label: meta.label,
+        palette: meta.palette,
+        kind: meta.category === 'image' ? 'image' : 'file',
+        status: 'reading',
+        progress: 6,
+      });
     }
+    if (!seeds.length) return;
+    setAttachments((a) => [...a, ...seeds]);
+
+    // Phase 2: extract content per-file. Each updates its own card row to
+    // 'ready' (success) or 'error' so the rest of the batch keeps moving.
+    await Promise.all(seeds.map(async (seed) => {
+      // Drive the progress bar while extraction is in flight — the actual
+      // FileReader / parser doesn't expose progress, so we ease it toward 90%.
+      const tick = setInterval(() => {
+        setAttachments((a) => a.map((x) =>
+          x.id === seed.id && x.status === 'reading' && x.progress < 90
+            ? { ...x, progress: Math.min(90, x.progress + 7) }
+            : x
+        ));
+      }, 120);
+      try {
+        const result = await extractAttachment(seed.file);
+        clearInterval(tick);
+        setAttachments((a) => a.map((x) => x.id === seed.id ? {
+          ...x,
+          status: 'ready',
+          progress: 100,
+          extractedKind: result.extractedKind,
+          dataUrl: result.dataUrl,
+          content: result.content,
+          extractError: result.extractError,
+        } : x));
+      } catch (err) {
+        clearInterval(tick);
+        setAttachments((a) => a.map((x) => x.id === seed.id ? {
+          ...x,
+          status: 'error',
+          progress: 100,
+          extractError: err?.message || String(err),
+        } : x));
+        showToast(`Could not read ${seed.name}`);
+      }
+    }));
   };
 
   const onPaste = (e) => {
@@ -243,10 +405,15 @@ export function ChatPanel({
 
   const removeAttachment = (id) => setAttachments(a => a.filter(x => x.id !== id));
 
+  const isAnyReading = attachments.some(a => a.status === 'reading');
+
   const send = () => {
     const v = input.trim();
-    if ((!v && !attachments.length) || isStreaming) return;
-    onSend(v, attachments);
+    if ((!v && !attachments.length) || isStreaming || isAnyReading) return;
+    // Strip the raw `file` reference before persisting; only the extracted
+    // payload (dataUrl / text content / metadata) needs to live in chat state.
+    const ready = attachments.map(({ file: _f, ...rest }) => rest);
+    onSend(v, ready);
     setInput('');
     setAttachments([]);
     if (taRef.current) taRef.current.style.height = 'auto';
@@ -269,21 +436,27 @@ export function ChatPanel({
   const showWelcome = messages.length === 0;
 
   return (
-    <div className="flex flex-col h-full bg-ink-900 border-r border-ink-800" style={{ width }}>
-      {/* Header */}
+    <div
+      className="chat-panel flex flex-col h-full bg-ink-900 border-r border-ink-800"
+      style={{ width: isMobile ? undefined : width }}
+    >
+      {/* Header — desktop shows full brand; mobile uses the app top-bar instead. */}
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-ink-800/80">
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="chat-brand-desktop flex items-center gap-2.5 min-w-0">
           <div className="logo-mark w-7 h-7 flex-none" />
           <div className="min-w-0">
             <div className="text-[15px] font-semibold tracking-tight">
-              App<span className="logo-gradient">Forge</span>
+              Vishal’s <span className="logo-gradient">Lovable</span>
             </div>
             <div className="text-[10px] uppercase tracking-[0.18em] text-ink-500 font-mono">AI app builder</div>
           </div>
         </div>
+        <div className="chat-brand-mobile items-center gap-2 min-w-0">
+          <div className="text-[10.5px] uppercase tracking-[0.16em] text-ink-500 font-mono">chat</div>
+        </div>
         <button
           onClick={onNewChat}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-ink-800 hover:bg-forge-600/20 hover:text-white border border-ink-700 hover:border-forge-600/40 text-[12px] text-ink-200 transition"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-ink-800 hover:bg-forge-600/20 hover:text-white border border-ink-700 hover:border-forge-600/40 text-[12px] text-ink-200 transition flex-none"
         >
           <IconPlus size={12} /> New
         </button>
@@ -304,13 +477,20 @@ export function ChatPanel({
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto scroll-fine px-4 py-4 space-y-4">
+      <div ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden scroll-fine px-4 py-4 space-y-4">
         {showWelcome ? (
           <WelcomeBlock onPick={(p) => onSend(p)} />
         ) : (
           <>
-            {messages.map(msg => (
-              <MessageView key={msg.id} msg={msg} onRetry={onRetry} onPreview={onPreview} />
+            {messages.filter(msg => !msg.internal).map(msg => (
+              <MessageView
+                key={msg.id}
+                msg={msg}
+                onRetry={onRetry}
+                onPreview={onPreview}
+                onPreviewDoc={onPreviewDoc}
+                onRegenerateDoc={onRegenerateDoc}
+              />
             ))}
             {isStreaming && messages[messages.length - 1]?.role !== 'assistant' && <TypingIndicator model={model} />}
           </>
@@ -324,32 +504,29 @@ export function ChatPanel({
             {toast}
           </div>
         )}
-        <input ref={fileInputRef} type="file" multiple accept="image/*,.txt,.md,.json,.js,.jsx,.ts,.tsx,.css,.html" className="hidden" onChange={(e) => { ingestFiles(e.target.files); e.target.value = ''; }} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => { ingestFiles(e.target.files); e.target.value = ''; }}
+        />
         <div
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-          onDragLeave={() => setDragOver(false)}
+          onDragLeave={(e) => { if (e.currentTarget.contains(e.relatedTarget)) return; setDragOver(false); }}
           onDrop={onDrop}
           className={`rounded-2xl bg-ink-850 border transition-all ${dragOver ? 'border-forge-400 shadow-[0_0_0_4px_rgba(124,58,237,0.18)]' : 'border-ink-700 focus-within:border-forge-500/50 focus-within:shadow-[0_0_0_3px_rgba(124,58,237,0.12)]'}`}
         >
           {dragOver && (
-            <div className="px-4 py-2 text-[12px] text-forge-200 border-b border-forge-500/30 bg-forge-600/10 rounded-t-2xl">
-              Drop images or files to attach…
+            <div className="px-4 py-2 text-[12px] text-forge-200 border-b border-forge-500/30 bg-forge-600/10 rounded-t-2xl flex items-center gap-2">
+              <IconPlus size={12} />
+              <span>Drop files to attach — images, PDFs, code, sheets, anything…</span>
             </div>
           )}
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-2 px-3 pt-3">
-              {attachments.map(a => (
-                <div key={a.id} className="group relative rounded-xl bg-ink-800/80 border border-ink-700 backdrop-blur-md overflow-hidden animate-fade-up">
-                  {a.kind === 'image' ? (
-                    <img src={a.dataUrl} alt={a.name} className="w-16 h-16 object-cover" />
-                  ) : (
-                    <div className="w-16 h-16 flex flex-col items-center justify-center gap-0.5 px-1">
-                      <span className="text-[10px] font-mono text-forge-300">{(a.name.split('.').pop() || 'file').toUpperCase()}</span>
-                      <span className="text-[9px] text-ink-500 truncate w-full text-center">{a.name}</span>
-                    </div>
-                  )}
-                  <button onClick={() => removeAttachment(a.id)} className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition" title="Remove">×</button>
-                </div>
+            <div className="flex flex-col gap-1.5 px-2.5 pt-2.5">
+              {attachments.map((a) => (
+                <AttachmentCard key={a.id} att={a} onRemove={() => removeAttachment(a.id)} />
               ))}
             </div>
           )}
@@ -360,12 +537,12 @@ export function ChatPanel({
             onKeyDown={onKey}
             onPaste={onPaste}
             rows={1}
-            placeholder={messages.length ? 'Ask AppForge… (paste or drop images)' : 'Ask AppForge to build something… (paste or drop images)'}
+            placeholder={messages.length ? "Ask Vishal's Lovable… (paste or drop images)" : "Ask Vishal's Lovable to build something… (paste or drop images)"}
             className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[13.5px] text-ink-100 placeholder-ink-500 outline-none scroll-fine"
             style={{ maxHeight: 200 }}
           />
-          <div className="flex items-center justify-between px-2 pb-2 pt-1 gap-2">
-            <div className="flex items-center gap-1">
+          <div className="prompt-toolbar flex items-center justify-between px-2 pb-2 pt-1 gap-2">
+            <div className="prompt-tools-left flex items-center gap-1">
               <AttachMenu onUploadFiles={() => fileInputRef.current?.click()} />
               <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-ink-800 hover:bg-ink-750 border border-ink-700 text-[11.5px] text-ink-200 transition">
                 <IconSparkles size={11} className="text-forge-300" /> Visual edits
@@ -383,7 +560,12 @@ export function ChatPanel({
                   <span className="w-2.5 h-2.5 rounded-sm bg-red-300" />
                 </button>
               ) : (
-                <button onClick={send} disabled={!input.trim()} className="w-8 h-8 rounded-full bg-forge-600 hover:bg-forge-500 disabled:bg-ink-800 disabled:text-ink-500 text-white transition flex items-center justify-center shadow-lg shadow-forge-900/40 disabled:shadow-none" title="Send">
+                <button
+                  onClick={send}
+                  disabled={(!input.trim() && !attachments.length) || isAnyReading}
+                  className="w-8 h-8 rounded-full bg-forge-600 hover:bg-forge-500 disabled:bg-ink-800 disabled:text-ink-500 text-white transition flex items-center justify-center shadow-lg shadow-forge-900/40 disabled:shadow-none"
+                  title={isAnyReading ? 'Waiting for attachments to finish reading…' : 'Send'}
+                >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
                 </button>
               )}
@@ -391,6 +573,78 @@ export function ChatPanel({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Lovable-style attachment card. Each row: square thumbnail / type badge,
+// filename, size + label, status, animated progress bar while reading,
+// remove button. Image attachments render their thumbnail; everything else
+// gets a coloured icon tile by category.
+export function AttachmentCard({ att, onRemove }) {
+  const palette = att.palette || { bg: 'bg-ink-800', fg: 'text-ink-300' };
+  const isImage = att.category === 'image' && att.dataUrl;
+  const isReading = att.status === 'reading';
+  const isError = att.status === 'error';
+  const isReady = att.status === 'ready';
+
+  let statusText = null;
+  if (isReading) statusText = 'reading…';
+  else if (isError) statusText = 'failed';
+  else if (att.extractError) statusText = 'binary preview only';
+  else if (isReady && att.extractedKind === 'image') statusText = 'ready · vision';
+  else if (isReady && att.extractedKind === 'text') statusText = 'ready · content extracted';
+  else if (isReady) statusText = 'ready · metadata only';
+
+  return (
+    <div className="group relative flex items-center gap-2.5 px-2 py-2 rounded-xl bg-ink-800/80 border border-ink-700 hover:border-ink-600 transition animate-fade-up">
+      <div className={`flex-none w-9 h-9 rounded-lg flex items-center justify-center overflow-hidden ${palette.bg} ${palette.fg}`}>
+        {isImage ? (
+          <img src={att.dataUrl} alt={att.name} className="w-full h-full object-cover" />
+        ) : (
+          fileIcon(att.category)
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <div className="text-[12.5px] text-ink-100 font-medium truncate min-w-0">{att.name}</div>
+          <span className={`flex-none text-[9.5px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded ${palette.bg} ${palette.fg}`}>
+            {att.label}
+          </span>
+        </div>
+        <div className="text-[10.5px] font-mono text-ink-500 mt-0.5 flex items-center gap-1.5 forge-wrap">
+          <span>{formatBytes(att.size)}</span>
+          {statusText && <span className="text-ink-600">·</span>}
+          {statusText && (
+            <span className={
+              isError ? 'text-red-300' :
+              isReading ? 'text-amber-300' :
+              isReady && att.extractedKind && att.extractedKind !== 'binary' ? 'text-emerald-300' :
+              'text-ink-400'
+            }>
+              {statusText}
+            </span>
+          )}
+        </div>
+        {(isReading || isError) && (
+          <div className="h-1 mt-1.5 rounded bg-ink-700/80 overflow-hidden">
+            <div
+              className={`h-full transition-[width] duration-200 ${isError ? 'bg-red-400/70' : 'bg-gradient-to-r from-forge-500 to-pink-400'}`}
+              style={{ width: `${Math.max(6, att.progress || 6)}%` }}
+            />
+          </div>
+        )}
+      </div>
+      <button
+        onClick={onRemove}
+        className="flex-none w-7 h-7 rounded-md text-ink-400 hover:text-red-300 hover:bg-red-500/10 transition flex items-center justify-center opacity-70 group-hover:opacity-100"
+        aria-label="Remove attachment"
+        title={isReading ? 'Cancel upload' : 'Remove attachment'}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -433,10 +687,10 @@ export function WelcomeBlock({ onPick }) {
 export function AttachMenu({ onUploadFiles }) {
   const [open, setOpen] = React.useState(false);
   const items = [
-    { label: 'Upload files',   sub: 'Drop documents or assets', icon: '⤥', action: onUploadFiles },
-    { label: 'Upload images',  sub: 'PNG, JPG, SVG',            icon: '▣', action: onUploadFiles },
-    { label: 'Import project', sub: 'From a URL or zip',          icon: '▤' },
-    { label: 'Connect GitHub', sub: 'Sync to a repository',       icon: '●' },
+    { label: 'Upload files',     sub: 'Any file type · drag & drop',   icon: '⤥', action: onUploadFiles },
+    { label: 'Documents',        sub: 'PDF, DOCX, XLSX, PPTX, CSV',    icon: '▤', action: onUploadFiles },
+    { label: 'Images',           sub: 'PNG, JPG, SVG, WebP',           icon: '▣', action: onUploadFiles },
+    { label: 'Code & data',      sub: 'JS/TS, JSON, YAML, MD, …',      icon: '◧', action: onUploadFiles },
   ];
   return (
     <div className="relative">

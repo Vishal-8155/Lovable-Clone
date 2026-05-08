@@ -1,6 +1,7 @@
 // Tiny JSX/JS syntax highlighter — no external lib.
 // Returns a string of HTML with span.tk-* classes (matches CSS in head).
 import React from 'react';
+import { DocumentCard } from './docs-ui.jsx';
 import { IconCheck, IconCode, IconCopy, IconEye, IconSparkles } from './icons.jsx';
 
 const KEYWORDS = new Set([
@@ -98,16 +99,23 @@ export function extractCode(text) {
   return null;
 }
 
-// Render markdown-ish content with code blocks.
+// Render markdown-ish content with code blocks and document blocks.
 // We split on ``` fences. Code blocks become summary cards (no inline code shown);
-// the actual code lives in the workspace pane on the right.
+// the actual code lives in the workspace pane on the right. `forge-doc` blocks
+// become DocumentCard cards showing download/preview buttons for AI-generated
+// documents — the materialized blob lives on `opts.docs[i]` (parsed and built
+// once streaming finishes; see app.jsx).
 export function renderMessageBody(text, opts = {}) {
   if (!text) return null;
   const parts = [];
   let rest = text;
   let key = 0;
   let codeIdx = 0;
-  const fenceRe = /```(\w+)?(?:\s+(?:filename=)?["']?([^\n"'`]+?)["']?)?\s*\n([\s\S]*?)(```|$)/;
+  let docIdx = 0;
+  // Permissive fence: lang token may include hyphen (e.g. `forge-doc`); the
+  // rest of the opening line is treated as freeform headers (filename=…,
+  // format=…, etc) and parsed below.
+  const fenceRe = /```([\w-]+)?([^\n]*)\n([\s\S]*?)(```|$)/;
   while (rest.length) {
     const m = rest.match(fenceRe);
     if (!m) {
@@ -117,21 +125,51 @@ export function renderMessageBody(text, opts = {}) {
     const before = rest.slice(0, m.index);
     if (before) parts.push(<MdProse key={key++} text={before} />);
     const lang = m[1] || 'jsx';
-    const fname = (m[2] && m[2].includes('.')) ? m[2].trim() : null;
-    const code = m[3];
+    const headers = m[2] || '';
+    const body = m[3];
     const closed = m[4] === '```';
-    parts.push(
-      <CodeSummaryCard
-        key={key++}
-        index={codeIdx++}
-        lang={lang}
-        filename={fname}
-        code={code}
-        streaming={!closed}
-        onPreview={opts.onPreview}
-        onCopy={opts.onCopy}
-      />
-    );
+
+    if (lang === 'forge-doc') {
+      const myIdx = docIdx++;
+      const filenameMatch = headers.match(/filename\s*=\s*["']([^"']+)["']/i);
+      const formatMatch = headers.match(/format\s*=\s*["']([^"']+)["']/i);
+      const realized = (opts.docs || [])[myIdx];
+      const fallbackName = filenameMatch?.[1] || `document-${myIdx + 1}`;
+      const fallbackFormat = (formatMatch?.[1] || fallbackName.split('.').pop() || 'pdf').toLowerCase();
+      const placeholder = realized || {
+        id: `pending_${myIdx}`,
+        filename: fallbackName,
+        format: fallbackFormat,
+        spec: null,
+        url: null,
+        size: 0,
+        generatedAt: Date.now(),
+        error: null,
+      };
+      parts.push(
+        <DocumentCard
+          key={key++}
+          doc={placeholder}
+          onPreview={opts.onPreviewDoc}
+          onRegenerate={opts.onRegenerateDoc}
+        />
+      );
+    } else {
+      const fnameMatch = headers.match(/(?:filename=)?["']?([\w./\-]+\.[\w]+)["']?/);
+      const fname = fnameMatch ? fnameMatch[1] : null;
+      parts.push(
+        <CodeSummaryCard
+          key={key++}
+          index={codeIdx++}
+          lang={lang}
+          filename={fname}
+          code={body}
+          streaming={!closed}
+          onPreview={opts.onPreview}
+          onCopy={opts.onCopy}
+        />
+      );
+    }
     rest = rest.slice(m.index + m[0].length);
   }
   return parts;
@@ -140,8 +178,8 @@ export function renderMessageBody(text, opts = {}) {
 export function MdProse({ text }) {
   const html = text
     .split('\n\n')
-    .map(p => p
-      .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-forge-900/40 text-forge-200 font-mono text-[12.5px]">$1</code>')
+    .map(p => escapeHtml(p)
+      .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-forge-900/40 text-forge-200 font-mono text-[12.5px] break-all">$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong class="text-white">$1</strong>')
       .replace(/\n/g, '<br/>')
     )
@@ -149,7 +187,12 @@ export function MdProse({ text }) {
     .map(p => `<p class="mb-2 last:mb-0">${p}</p>`)
     .join('');
   if (!html) return null;
-  return <div className="text-[14px] leading-relaxed text-ink-200" dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <div
+      className="text-[14px] leading-relaxed text-ink-200 forge-wrap max-w-full"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
 
 // Compact card shown in chat instead of inline code. Mirrors Lovable's "what changed" summary.

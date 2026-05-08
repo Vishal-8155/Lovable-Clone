@@ -5,6 +5,28 @@ body {
   font-family: 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+/* Wrap-anywhere utility for chat content that may contain long URLs / stack traces.
+   Combines word-break + overflow-wrap so unbreakable tokens like
+   `https://esm.sh/react-dom@18.3.1/es2022/react-dom.mjs:10:42358` always wrap
+   inside their container instead of pushing the bubble's width outward. */
+.forge-wrap {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Pre-style block used for runtime error stack traces inside the chat. */
+.forge-errpre {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  margin: 0;
 }
 
 .scroll-fine::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -163,4 +185,255 @@ input[type=range].forge-range::-webkit-slider-thumb {
   background: linear-gradient(135deg, #a78bfa, #f472b6);
   border-radius: 2px;
   z-index: 1;
+}
+
+/* --------------------------------------------------------------------------
+   Responsive app shell
+   --------------------------------------------------------------------------
+   Layout strategy:
+   • Desktop (>=1024px): three columns — sidebar | chat | workspace.
+   • Tablet (768–1023px): icon-only sidebar, narrower chat, workspace fills.
+   • Mobile (<768px): single-pane mode. The sidebar becomes a slide-in drawer
+     overlay; the chat panel and workspace panel are shown one at a time, gated
+     by `data-mobile-view="chat" | "workspace"` on .app-shell.
+*/
+
+.app-shell,
+.chat-panel,
+.workspace-shell,
+.ide-shell,
+.preview-frame {
+  min-width: 0;
+}
+
+.workspace-tabs {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.workspace-tabs button {
+  min-height: 32px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.prompt-toolbar {
+  min-width: 0;
+}
+
+.prompt-tools-left {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.prompt-tools-left::-webkit-scrollbar {
+  display: none;
+}
+
+/* Mobile-only: top bar + view toggle + drawer backdrop. Hidden on >=768px. */
+.mobile-topbar { display: none; }
+.mobile-backdrop { display: none; }
+.chat-mobile-drawer-btn { display: none; }
+.chat-brand-desktop { display: flex; }
+.chat-brand-mobile { display: none; }
+.workspace-back-btn { display: none; }
+
+/* ---------- Mobile: <768px ----------------------------------------------- */
+@media (max-width: 767.98px) {
+  html, body, #root {
+    height: 100svh;
+  }
+
+  .app-shell {
+    flex-direction: column;
+    height: 100svh;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Top bar */
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex: 0 0 auto;
+    height: 52px;
+    padding: 0 10px;
+    background: #0f0f17;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    z-index: 30;
+  }
+
+  /* Sidebar becomes a fixed slide-in drawer */
+  .history-sidebar {
+    position: fixed !important;
+    inset: 0 auto 0 0;
+    z-index: 60;
+    width: min(86vw, 320px) !important;
+    height: 100svh !important;
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+  .history-sidebar[data-open="true"] {
+    transform: translateX(0);
+    box-shadow: 18px 0 60px rgba(0, 0, 0, 0.5);
+  }
+
+  /* Backdrop appears whenever sidebar is open */
+  .mobile-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: 50;
+    animation: forge-fade-in 0.18s ease;
+  }
+
+  /* Switch which main panel is visible based on data-mobile-view */
+  .app-shell[data-mobile-view="chat"] .workspace-shell { display: none; }
+  .app-shell[data-mobile-view="workspace"] .chat-panel { display: none; }
+
+  /* Both panels go full-width when active */
+  .chat-panel,
+  .workspace-shell {
+    width: 100% !important;
+    max-width: 100vw;
+    height: auto !important;
+    flex: 1 1 auto;
+    min-height: 0;
+    border-right: 0;
+  }
+
+  .resizer { display: none; }
+
+  /* Chat panel — swap branded header for compact mobile header */
+  .chat-brand-desktop { display: none; }
+  .chat-brand-mobile { display: flex; }
+  .chat-mobile-drawer-btn { display: inline-flex; }
+
+  /* Workspace header tightens, gains a back button */
+  .workspace-header {
+    padding: 8px 10px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .workspace-back-btn { display: inline-flex; }
+
+  /* IDE: stack file explorer above editor */
+  .ide-shell {
+    flex-direction: column;
+  }
+  .ide-explorer {
+    width: 100% !important;
+    height: 148px;
+    border-right: 0;
+    border-bottom: 1px solid #1a1a25;
+  }
+
+  /* Workspace tabs — horizontal scroll for tabs that overflow */
+  .workspace-tabs {
+    width: 100%;
+    padding: 2px;
+  }
+  .workspace-tabs button {
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  /* Documents pane: stack list above preview */
+  .docs-pane {
+    flex-direction: column !important;
+  }
+  .docs-pane-list {
+    width: 100% !important;
+    max-height: 36vh;
+    border-right: 0 !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .prompt-toolbar {
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .prompt-tools-left {
+    max-width: calc(100vw - 110px);
+  }
+
+  .preview-frame {
+    border-radius: 6px;
+  }
+}
+
+/* ---------- Tablet: 768–1023px ------------------------------------------ */
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .history-sidebar {
+    width: 56px !important;
+  }
+  .chat-panel {
+    width: min(40vw, 380px) !important;
+    flex: 0 0 auto;
+  }
+  .workspace-shell {
+    flex: 1 1 0;
+  }
+  .ide-explorer {
+    width: 200px !important;
+  }
+}
+
+/* ---------- Small desktop: 1024–1199px ---------------------------------- */
+@media (min-width: 1024px) and (max-width: 1199.98px) {
+  .chat-panel {
+    max-width: 460px;
+  }
+  .ide-explorer {
+    width: 220px !important;
+  }
+}
+
+/* ---------- xl: 1200–1535px ---------------------------------------------- */
+@media (min-width: 1200px) and (max-width: 1535.98px) {
+  .chat-panel {
+    max-width: 520px;
+  }
+}
+
+/* ---------- 2xl: ultrawide ----------------------------------------------- */
+@media (min-width: 1536px) {
+  .chat-panel {
+    max-width: 620px;
+  }
+  .workspace-shell {
+    max-width: calc(100vw - 48px);
+  }
+}
+
+/* Touch-friendly hit targets on coarse pointers (phones / tablets) */
+@media (pointer: coarse) {
+  button,
+  [role="button"] {
+    min-height: 36px;
+  }
+  textarea,
+  input {
+    min-height: 36px;
+    font-size: 16px; /* prevents iOS Safari zoom on focus */
+  }
+  .scroll-fine::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+}
+
+@keyframes forge-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
