@@ -103,7 +103,12 @@ export function applyOpsLive(existing, ops) {
 
 export function pickPreviewFile(files) {
   if (!files || !files.length) return null;
-  // Strong preferences for the canonical entry — fall through to anything reactish.
+  // Strong preferences for the canonical entry.
+  //
+  // IMPORTANT: Default projects should be plain HTML/CSS/JS unless the user
+  // explicitly asked for a framework. We can't see the prompt here, so we use a
+  // conservative heuristic: if a root index.html exists and there is no clear
+  // React entry, prefer index.html.
   const ENTRY_PRIORITY = [
     /^(?:\/)?src\/App\.(jsx|tsx)$/i,
     /^(?:\/)?App\.(jsx|tsx)$/i,
@@ -115,6 +120,8 @@ export function pickPreviewFile(files) {
     const hit = files.find(f => re.test(f.name));
     if (hit) return hit;
   }
+  const rootIndex = files.find(f => /^index\.html?$/i.test(f.name));
+  if (rootIndex) return rootIndex;
   const reactish = files.find(f => /\.(jsx|tsx)$/.test(f.name));
   if (reactish) return reactish;
   const html = files.find(f => /\.html?$/.test(f.name));

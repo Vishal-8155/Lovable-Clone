@@ -279,6 +279,84 @@ function forgePreviewBootstrap() {
 // `entryName` defaults to whatever pickPreviewFile returns, but callers can
 // override (e.g. when we know the user is editing a different mountable file).
 export function buildSrcDoc(files, packages = [], entryName = null) {
+  // --- Static HTML projects -------------------------------------------------
+  // If the project contains an index.html (or any html) and no JS/TS sources,
+  // render it directly instead of forcing the React/Babel pipeline.
+  const allFiles = files || [];
+  const fileMapAll = Object.create(null);
+  for (const f of allFiles) fileMapAll[f.name] = f.code || '';
+
+  function joinPath(base, rel) {
+    const baseParts = String(base || '').split('/').slice(0, -1);
+    const relParts = String(rel || '').split('/');
+    const out = baseParts.slice();
+    for (let i = 0; i < relParts.length; i++) {
+      const p = relParts[i];
+      if (p === '..') out.pop();
+      else if (p && p !== '.') out.push(p);
+    }
+    return out.join('/');
+  }
+
+  function buildStaticSrcDoc(htmlName) {
+    const html = fileMapAll[htmlName] || '';
+    const resolveAsset = (spec) => {
+      if (!spec || /^(https?:)?\/\//i.test(spec) || spec.startsWith('data:')) return null;
+      const abs = joinPath(htmlName, spec);
+      return fileMapAll[abs] != null ? abs : (fileMapAll[spec] != null ? spec : null);
+    };
+
+    let out = String(html);
+    // Inline CSS links
+    out = out.replace(/<link\b([^>]*?)rel=["']stylesheet["']([^>]*?)>/gi, (full) => {
+      const href = /href=["']([^"']+)["']/i.exec(full)?.[1];
+      const resolved = resolveAsset(href);
+      if (!resolved) return full;
+      return `<style>\n${fileMapAll[resolved] || ''}\n</style>`;
+    });
+    // Inline JS scripts
+    out = out.replace(/<script\b([^>]*?)src=["']([^"']+)["']([^>]*)>\s*<\/script>/gi, (full, pre, src, post) => {
+      const resolved = resolveAsset(src);
+      if (!resolved) return full;
+      const isModule = /\btype=["']module["']/.test(pre + ' ' + post);
+      return `<script${isModule ? ' type="module"' : ''}>\n${fileMapAll[resolved] || ''}\n</script>`;
+    });
+
+    const bridge = `
+<script>
+  (function () {
+    function post(payload) { try { window.parent && window.parent.postMessage(payload, '*'); } catch (_) {} }
+    function log(level, msg) { post({ type: 'forge:preview-log', level: level || 'info', msg: String(msg || ''), data: null }); }
+    var orig = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+    function fmt(args) {
+      try { return Array.prototype.slice.call(args).map(function (a) { return typeof a === 'string' ? a : (a && a.message) ? a.message : String(a); }).join(' '); }
+      catch (_) { return ''; }
+    }
+    console.log = function () { orig.log.apply(console, arguments); log('info', fmt(arguments)); };
+    console.info = function () { orig.info.apply(console, arguments); log('info', fmt(arguments)); };
+    console.warn = function () { orig.warn.apply(console, arguments); log('warn', fmt(arguments)); };
+    console.error = function () { orig.error.apply(console, arguments); log('error', fmt(arguments)); };
+    window.addEventListener('error', function (ev) {
+      post({ type: 'forge:preview-error', message: ev.message || 'Runtime error', stack: (ev.error && ev.error.stack) || '' });
+    });
+    window.addEventListener('unhandledrejection', function (ev) {
+      var r = ev.reason;
+      post({ type: 'forge:preview-error', message: (r && r.message) || String(r || 'Unhandled rejection'), stack: (r && r.stack) || '' });
+    });
+    window.addEventListener('load', function () { post({ type: 'forge:preview-ready' }); });
+  })();
+</script>`;
+
+    if (/<\/body>/i.test(out)) return out.replace(/<\/body>/i, bridge + '\n</body>');
+    return out + bridge;
+  }
+
+  const hasSource = allFiles.some(isSourceFile);
+  const htmlEntry = allFiles.find(f => /^index\.html?$/i.test(f.name)) || allFiles.find(f => /\.html?$/i.test(f.name));
+  if (!hasSource && htmlEntry) {
+    return buildStaticSrcDoc(htmlEntry.name);
+  }
+
   const sourceFiles = (files || [])
     .filter(isSourceFile)
     .map(f => ({
